@@ -337,17 +337,29 @@ class singleCET_FourierDataset(singleCET_dataset):
         Creates a (3D) shell with given inner_radius and outer_radius centered at the middle of the array.
         """
 
-        length = min(tomo_shape)
-        if length % 2 == 1:
-            length = length - 1
+        #length = min(tomo_shape)
+        #if length % 2 == 1:
+        #    length = length - 1
 
-        mask_shape = len(tomo_shape) * [length]
-        _shell_mask = np.zeros(mask_shape)
+        #mask_shape = len(tomo_shape) * [length]
+        #_shell_mask = np.zeros(mask_shape)
 
         # only do positive quadrant first
-        for z in range(0, outer_radius + 1):
-            for y in range(0, outer_radius + 1):
-                for x in range(0, outer_radius + 1):
+        #use rfftfreq here
+        #for z in range(0, outer_radius + 1):
+        #    for y in range(0, outer_radius + 1):
+        #        for x in range(0, outer_radius + 1):
+        
+        z, y, x = torch.meshgrid([torch.fft.fftfreq(tomo_shape[0]),
+                                  torch.fft.fftfreq(tomo_shape[1]),
+                                  torch.fft.rfftfreq(tomo_shape[2])])
+
+        mask = torch.zeros_like(z)
+        mask[torch.sqrt(z**2 + y**2 + x**2) < torch.tensor([outer_radius])] = 1
+        """
+        for z in torch.fft.fftshift(torch.fft.fftfreq(tomo_shape[0])):
+            for y in np.fft.rfftfreq(tomo_shape[1]):
+                for x in np.fft.rfftfreq(tomo_shape[2]):
 
                     r = np.linalg.norm([z, y, x])
 
@@ -371,34 +383,37 @@ class singleCET_FourierDataset(singleCET_dataset):
         )  # rotate again 180º to get full volume
         
         _shell_mask += aux
-        
-        return _shell_mask
+        """
+        #return _shell_mask
+        return mask
 
     def make_shell(self, inner_radius, outer_radius, tomo_shape):
         """
         Creates a (3D) shell with given inner_radius and delta_r width centered at the middle of the array.
 
         """
-        length = min(tomo_shape)
-        if length % 2 == 1:
-            length = length - 1
+        #length = min(tomo_shape)
+        #if length % 2 == 1:
+        #    length = length - 1
 
-        _shell_mask = self._make_shell(inner_radius, outer_radius, tomo_shape)
-
-        if inner_radius == 0:
-            vol = 4 / 3 * np.pi * outer_radius**3
-            pct_diff = (vol - _shell_mask.sum()) / vol
-            if pct_diff > 0.1:
+        shell_mask = self._make_shell(inner_radius, outer_radius, tomo_shape)
+        
+        assert shell_mask.shape == self.tomoF_shape
+        
+        if inner_radius == 0: #why would inner radius not be 0?
+            vol = torch.prod(torch.tensor(shell_mask.shape))
+            pct_diff = shell_mask.sum() / vol
+            if pct_diff > 0.11: #changed to 0.11 for round off error
                 print(pct_diff)
                 raise ValueError("Sanity check for sphere volume not passed")
 
         # finally, fill the actual shape of the tomogram with the mask
-        shell_mask = np.zeros(tomo_shape)
-        shell_mask[
-            (tomo_shape[0] - length) // 2 : (tomo_shape[0] + length) // 2,
-            (tomo_shape[1] - length) // 2 : (tomo_shape[1] + length) // 2,
-            (tomo_shape[2] - length) // 2 : (tomo_shape[2] + length) // 2,
-        ] = _shell_mask
+        #shell_mask = np.zeros(tomo_shape)
+        #shell_mask[
+        #    (tomo_shape[0] - length) // 2 : (tomo_shape[0] + length) // 2,
+        #    (tomo_shape[1] - length) // 2 : (tomo_shape[1] + length) // 2,
+        #    (tomo_shape[2] - length) // 2 : (tomo_shape[2] + length) // 2,
+        #] = _shell_mask
 
         return shell_mask
 
@@ -465,7 +480,7 @@ class singleCET_FourierDataset(singleCET_dataset):
             extra_row = bernoulli_Vmask[:, 0:diff0, ...]
             bernoulli_Vmask = torch.cat([extra_row, bernoulli_Vmask], dim=1)
 
-        if bernoulli_Vmask[0, ...].shape != self.dataF.shape:
+        if bernoulli_Vmask[0, ...].shape != self.tomoF_shape:
             raise ValueError(
                 "Volumetric mask with shape %s has a different shape in the last three components as dataF with shape %s"
                 % (str(bernoulli_Vmask.shape), str(self.dataF.shape))
@@ -476,11 +491,16 @@ class singleCET_FourierDataset(singleCET_dataset):
     def create_hiFreqMask(self):
         "Randomly mask high frequencies with a sphere"
         inner = 0
-        shape_vol = np.array(self.tomo_shape).prod()
-        low_r = (0.05 * 3/(4*np.pi) * shape_vol)**(1/3)
-        high_r = (0.1 * 3/(4*np.pi) * shape_vol)**(1/3)
+        #shape_vol = np.array(self.tomo_shape).prod()
+        
+        #this doesn't work for relatively thin samples
+        #more accurate to make an pixel-wise ellipsoid (spatial frequency sphere) containing spatial resolution information up to outer
+        #low_r = (0.05 * 3/(4*np.pi) * shape_vol)**(1/3)
+        #high_r = (0.1 * 3/(4*np.pi) * shape_vol)**(1/3)
+        low_r = (0.05 * 3/(4*np.pi))**(1/3)
+        high_r = (0.1 * 3/(4*np.pi))**(1/3)
         outer = np.random.uniform(low_r, high_r)
-        outer = int(np.round(outer))
+        #outer = int(np.round(outer))
         
         if min(self.tomo_shape) > 400:
             # print("Using 2x downsampled shape to create spheres")
@@ -488,11 +508,11 @@ class singleCET_FourierDataset(singleCET_dataset):
         else:
             shell_mask = self.make_shell(inner, outer, self.tomo_shape)
 
-        shell_mask = torch.tensor(shell_mask)
+        #shell_mask = torch.tensor(shell_mask)
         # make shell correspond to the unshifted spectrum
-        shell_mask = torch.fft.ifftshift(shell_mask)
+        #shell_mask = torch.fft.ifftshift(shell_mask)
         # make it correspond to only real part of spectrum
-        shell_mask = shell_mask[..., 0 : self.tomoF_shape[-1]]
+        #shell_mask = shell_mask[..., 0 : self.tomoF_shape[-1]]
 
         return shell_mask.float().unsqueeze(0)
 
@@ -521,7 +541,7 @@ class singleCET_FourierDataset(singleCET_dataset):
 
     def create_batchFourierSamples(self, M):
         mask = Parallel(
-                n_jobs=5
+                n_jobs=4
                 )(delayed(self.create_mask)() for i in range(M))
         mask = torch.stack(mask, axis=0)
 
